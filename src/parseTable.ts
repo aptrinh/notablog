@@ -3,6 +3,7 @@ import { getOnePageAsTree } from 'nast-util-from-notionapi'
 import { renderToHTML } from 'nast-util-to-react'
 import { SemanticString } from 'nast-types'
 
+import { Config } from './config'
 import {
   NCheckboxProperty,
   NDateTimeProperty,
@@ -19,7 +20,8 @@ import { SiteContext, PageMetadata } from './types'
 /** Extract interested data for blog generation from a Notion table. */
 export async function parseTable(
   collectionPageURL: string,
-  notionAgent: ReturnType<typeof createAgent>
+  notionAgent: ReturnType<typeof createAgent>,
+  config: Config
 ): Promise<SiteContext> {
   const pageID = getPageIDFromCollectionPageURL(collectionPageURL)
   const pageCollection = (await getOnePageAsTree(
@@ -67,7 +69,7 @@ export async function parseTable(
       id: extractIdFromUri(record.uri),
       iconUrl: getIconUrl(record.icon),
       cover: record.cover,
-      title: record.title,
+      title: renderNodesToText(record.title),
       tags:
         record.propertyCellMap.get(
           propertyAccessMap.get('tags') as NMultiSelectProperty
@@ -94,7 +96,13 @@ export async function parseTable(
           record.propertyCellMap.get(
             propertyAccessMap.get('url') as NTextProperty
           )?.value
-        )
+        ),
+        renderNodesToText(
+          record.propertyCellMap.get(
+            propertyAccessMap.get('title') as NTextProperty
+          )?.value
+        ),
+        config
       ),
       description: record.propertyCellMap.get(
         propertyAccessMap.get('description') as NTextProperty
@@ -115,7 +123,8 @@ export async function parseTable(
       dateString: getDateString(
         record.propertyCellMap.get(
           propertyAccessMap.get('date') as NDateTimeProperty
-        )?.value?.start_date
+        )?.value?.start_date,
+        config
       ),
       createdTime: record.createdTime,
       lastEditedTime: record.lastEditedTime,
@@ -125,7 +134,7 @@ export async function parseTable(
   const siteContext: SiteContext = {
     iconUrl: getIconUrl(pageCollection.icon),
     cover: pageCollection.cover,
-    title: pageCollection.name,
+    title: renderNodesToText(pageCollection.name),
     description: pageCollection.description,
     descriptionPlain: renderNodesToText(pageCollection.description),
     descriptionHTML: renderNodesToHtml(pageCollection.description),
@@ -168,11 +177,14 @@ function renderNodesToHtml(
 
 /**
  * Get formatted string from a date-typed property
- * @param {Nast.Page} page
- * @param {string} propId
+ * @param {string | undefined} dateRaw
+ * @param {Config} config
  * @returns {string | undefined} WWW, MMM DD, YYY
  */
-function getDateString(dateRaw: string | undefined): string | undefined {
+function getDateString(
+  dateRaw: string | undefined,
+  config: Config
+): string | undefined {
   if (dateRaw) {
     const options: Parameters<Date['toLocaleDateString']>['1'] = {
       weekday: 'short',
@@ -180,7 +192,8 @@ function getDateString(dateRaw: string | undefined): string | undefined {
       month: 'short',
       day: 'numeric',
     }
-    const dateString = new Date(dateRaw).toLocaleDateString('en-US', options)
+    const locales = config.get('locales') || 'en-US'
+    const dateString = new Date(dateRaw).toLocaleDateString(locales, options)
     return dateString
   } else return undefined
 }
@@ -193,16 +206,44 @@ function getDateString(dateRaw: string | undefined): string | undefined {
  *
  * First, `/` and `\` are removed since they can't exist in file path.
  * Second, if the escaped url is a empty string or user doesn't specify an
- * url, use page id as the url.
- * @param {Nast.Page} page
- * @param {string} propId
+ * url, generate a slug from the title (if `autoSlug` is `true` in `Config`)
+ * and use it along with page id as the filename,
+ * otherwise just use the page id as is.
+ * @param {string} pageUri
+ * @param {string} customSlug
+ * @param {string} title
+ * @param {Config} config
  * @returns {string}
  */
-function getPageUrl(uri: string, slug: string): string {
-  const safeUrl = getSafeUrl(slug)
-  const realUrl =
-    safeUrl.length > 0 ? `${safeUrl}.html` : `${extractIdFromUri(uri)}.html`
-  return realUrl
+function getPageUrl(
+  pageUri: string,
+  customSlug: string,
+  title: string,
+  config: Config
+): string {
+  let url = getSafeUrl(customSlug)
+  if (url.length === 0) {
+    if (config.get('autoSlug')) {
+      const partialId = extractIdFromUri(pageUri).slice(0, 6)
+      url = `${getSlugFromTitle(title)}-${partialId}`
+    } else {
+      url = `${extractIdFromUri(pageUri)}`
+    }
+  }
+  return `${url}.html`
+}
+
+/**
+ * Returns a formatted slug from a title by stripping non-alphanumeric chars, and
+ * replacing spaces with dashes.
+ * @param {string} title
+ * @returns {string}
+ */
+function getSlugFromTitle(title: string): string {
+  return title
+    .replaceAll(/[\s\\/]/g, '-')
+    .replaceAll(/[^\w-]/g, '')
+    .toLowerCase()
 }
 
 /**
